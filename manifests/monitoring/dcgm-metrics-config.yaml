@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dcgm-exporter-metrics-config
+  namespace: gpu-operator
+data:
+  dcgm-metrics.csv: |
+    # Utilization — core chargeback metrics
+    DCGM_FI_DEV_GPU_UTIL,      gauge, GPU utilization (in %).
+    DCGM_FI_PROF_GR_ENGINE_ACTIVE, gauge, Ratio of time the graphics engine is active.
+    DCGM_FI_PROF_PIPE_TENSOR_ACTIVE, gauge, Ratio of cycles the tensor (HMMA) pipe is active.
+    DCGM_FI_PROF_DRAM_ACTIVE,  gauge, Ratio of cycles the device memory interface is active.
+
+    # Memory — detect allocation without usage
+    DCGM_FI_DEV_FB_FREE,  gauge, Framebuffer memory free (in MiB).
+    DCGM_FI_DEV_FB_USED,  gauge, Framebuffer memory used (in MiB).
+
+    # Temperature + Power — for capacity planning
+    DCGM_FI_DEV_GPU_TEMP,    gauge, GPU temperature (in C).
+    DCGM_FI_DEV_POWER_USAGE, gauge, Power draw (in W).
+
+    # NVLink — for monitoring Dynamo's NIXL KV-cache transfers
+    DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL, counter, Total NVLink bandwidth counters.
+    DCGM_FI_PROF_NVLINK_TX_BYTES, gauge, NVLink transmit bytes/sec.
+    DCGM_FI_PROF_NVLINK_RX_BYTES, gauge, NVLink receive bytes/sec.
+
+    # PCIe — for TCP-mode KV transfers
+    DCGM_FI_PROF_PCIE_TX_BYTES, gauge, PCIe transmit bytes/sec.
+    DCGM_FI_PROF_PCIE_RX_BYTES, gauge, PCIe receive bytes/sec.

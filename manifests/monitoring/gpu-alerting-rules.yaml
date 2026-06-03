@@ -1,0 +1,46 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: gpu-alerting-rules
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  groups:
+    - name: gpu.alerts
+      rules:
+        - alert: HighGPUWasteByDGD
+          expr: deployment:gpu_waste_fraction:ratio > 0.4
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "DGD {{ $labels.dgd }} wasting {{ $value | humanizePercentage }} GPU capacity"
+            description: >
+              DGD {{ $labels.dgd }} has been wasting more than 40% of its
+              allocated GPU capacity for over 10 minutes.
+              Consider right-sizing GPU requests or scaling down idle workers.
+            runbook_url: "https://github.com/user/eks-gpu-cost-attribution-vllm/blob/main/runbooks/high-gpu-waste.md"
+
+        - alert: CriticalGPUWasteByDGD
+          expr: deployment:gpu_waste_fraction:ratio > 0.7
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "CRITICAL: DGD {{ $labels.dgd }} wasting {{ $value | humanizePercentage }} GPU"
+            description: >
+              DGD {{ $labels.dgd }} is wasting more than 70% of GPU capacity.
+              Immediate action needed — GPU is allocated but almost completely idle.
+            runbook_url: "https://github.com/user/eks-gpu-cost-attribution-vllm/blob/main/runbooks/high-gpu-waste.md"
+
+        - alert: GPUPricingStale
+          expr: gpu_price_stale == 1
+          for: 12h
+          labels:
+            severity: warning
+          annotations:
+            summary: "GPU pricing data is stale"
+            description: >
+              The pricing exporter has not successfully refreshed GPU prices in over 12 hours.
+              Cost attribution data may be using outdated prices.

@@ -1,0 +1,73 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: gpu-recording-rules
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  groups:
+    # Tier 1: Per-pod GPU utilization (5-min smoothed)
+    - name: gpu.cost.tier1
+      interval: 60s
+      rules:
+        - record: pod:gpu_utilization:avg5m
+          expr: |
+            avg_over_time(
+              DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod!="",namespace="dynamo-system"}[5m]
+            )
+
+    # Tier 2: Per-DGD (deployment) aggregation
+    # Dynamo pods are named: <dgd-name>-<component>-<hash>
+    # vllm-disagg-* → disaggregated, vllm-agg-* → aggregated
+    - name: gpu.cost.tier2
+      interval: 60s
+      rules:
+        - record: deployment:gpu_allocated:count
+          expr: |
+            count(
+              label_replace(
+                DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod!="",namespace="dynamo-system"},
+                "dgd", "$1", "pod", "([a-z]+-[a-z]+)-.*"
+              )
+            ) by (dgd)
+
+        - record: deployment:gpu_utilization:avg
+          expr: |
+            avg by (dgd) (
+              label_replace(
+                DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod!="",namespace="dynamo-system"},
+                "dgd", "$1", "pod", "([a-z]+-[a-z]+)-.*"
+              )
+            )
+
+    # Tier 3: Cost math
+    - name: gpu.cost.tier3
+      interval: 60s
+      rules:
+        - record: deployment:gpu_cost_per_hour:sum
+          expr: |
+            deployment:gpu_allocated:count
+            * on() group_left()
+            gpu_price_per_hour{instance_type="g6e.2xlarge"}
+
+        - record: deployment:gpu_effective_cost_per_hour:sum
+          expr: |
+            deployment:gpu_cost_per_hour:sum
+            * deployment:gpu_utilization:avg
+
+        - record: deployment:gpu_waste_fraction:ratio
+          expr: |
+            1 - deployment:gpu_utilization:avg
+
+    # Namespace-level rollup
+    - name: gpu.cost.namespace
+      interval: 60s
+      rules:
+        - record: namespace:gpu_cost_per_hour:sum
+          expr: |
+            sum(deployment:gpu_cost_per_hour:sum)
+
+        - record: namespace:gpu_waste_fraction:ratio
+          expr: |
+            avg(deployment:gpu_waste_fraction:ratio)

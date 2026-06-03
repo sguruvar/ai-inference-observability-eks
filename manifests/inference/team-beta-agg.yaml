@@ -1,0 +1,41 @@
+# Team Beta: Aggregated serving (single worker handles both prefill + decode)
+# Deployed in dynamo-system with team label for cost attribution
+apiVersion: nvidia.com/v1alpha1
+kind: DynamoGraphDeployment
+metadata:
+  name: vllm-agg
+  namespace: dynamo-system
+  labels:
+    team: beta
+spec:
+  services:
+    Frontend:
+      componentType: frontend
+      replicas: 1
+      extraPodSpec:
+        mainContainer:
+          image: nvcr.io/nvidia/ai-dynamo/dynamo-frontend:1.1.1
+    VllmDecodeWorker:
+      envFromSecret: hf-token-secret
+      componentType: worker
+      replicas: 1
+      resources:
+        requests:
+          gpu: "1"
+        limits:
+          gpu: "1"
+      extraPodSpec:
+        nodeSelector:
+          node.kubernetes.io/instance-type: g6e.2xlarge
+        tolerations:
+          - key: "nvidia.com/gpu"
+            operator: "Exists"
+            effect: "NoSchedule"
+        mainContainer:
+          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.1.1
+          workingDir: /workspace/examples/backends/vllm
+          command:
+            - /bin/bash
+            - -c
+            - |
+              exec python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B

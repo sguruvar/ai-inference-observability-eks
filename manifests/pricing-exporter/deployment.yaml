@@ -1,0 +1,230 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-pricing-exporter
+  namespace: monitoring
+  annotations:
+    eks.amazonaws.com/role-arn: ROLE_ARN_PLACEHOLDER
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-pricing-exporter
+  namespace: monitoring
+  labels:
+    app: gpu-pricing-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gpu-pricing-exporter
+  template:
+    metadata:
+      labels:
+        app: gpu-pricing-exporter
+    spec:
+      serviceAccountName: gpu-pricing-exporter
+      containers:
+        - name: exporter
+          image: python:3.12-slim
+          command:
+            - /bin/bash
+            - -c
+            - |
+              pip install -q boto3 prometheus_client &&
+              python3 /app/exporter.py
+          ports:
+            - containerPort: 9100
+              name: metrics
+          env:
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: INSTANCE_TYPES
+              value: "g6e.2xlarge,g5.xlarge,p5.48xlarge"
+            - name: REFRESH_INTERVAL_HOURS
+              value: "6"
+          volumeMounts:
+            - name: code
+              mountPath: /app
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9100
+            initialDelaySeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9100
+            initialDelaySeconds: 60
+      volumes:
+        - name: code
+          configMap:
+            name: gpu-pricing-exporter-code
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-pricing-exporter-code
+  namespace: monitoring
+data:
+  exporter.py: |
+    """
+    GPU Pricing Exporter — fetches real-time GPU instance prices from AWS Price List API
+    and exposes them as Prometheus gauges for use in recording rules.
+
+    Metric: gpu_price_per_hour{instance_type, region, gpu_model}
+    """
+    import json
+    import logging
+    import os
+    import threading
+    import time
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    import boto3
+    from prometheus_client import Gauge, generate_latest, CONTENT_TYPE_LATEST
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logger = logging.getLogger(__name__)
+
+    # Prometheus metrics
+    gpu_price_per_hour = Gauge(
+        'gpu_price_per_hour',
+        'On-demand price per GPU per hour (USD)',
+        ['instance_type', 'region', 'gpu_model']
+    )
+    gpu_price_stale = Gauge(
+        'gpu_price_stale',
+        'Whether price data is stale (1=stale, 0=fresh)',
+        ['instance_type', 'region']
+    )
+
+    # Instance configs: gpus_per_instance determines per-GPU price
+    GPU_CONFIGS = {
+        "g6e.2xlarge":  {"gpus": 1, "gpu_model": "L40S"},
+        "g6e.12xlarge": {"gpus": 4, "gpu_model": "L40S"},
+        "g5.xlarge":    {"gpus": 1, "gpu_model": "A10G"},
+        "g5.12xlarge":  {"gpus": 4, "gpu_model": "A10G"},
+        "p5.48xlarge":  {"gpus": 8, "gpu_model": "H100"},
+        "p4d.24xlarge": {"gpus": 8, "gpu_model": "A100"},
+    }
+
+    REGION_TO_LOCATION = {
+        "us-east-1": "US East (N. Virginia)",
+        "us-east-2": "US East (Ohio)",
+        "us-west-2": "US West (Oregon)",
+        "eu-west-1": "EU (Ireland)",
+    }
+
+    last_refresh_time = 0
+    is_stale = True
+
+
+    def fetch_price(client, instance_type, location):
+        """Fetch on-demand hourly price for an instance type."""
+        try:
+            response = client.get_products(
+                ServiceCode="AmazonEC2",
+                Filters=[
+                    {"Type": "TERM_MATCH", "Field": "instanceType", "Value": instance_type},
+                    {"Type": "TERM_MATCH", "Field": "location", "Value": location},
+                    {"Type": "TERM_MATCH", "Field": "operatingSystem", "Value": "Linux"},
+                    {"Type": "TERM_MATCH", "Field": "tenancy", "Value": "Shared"},
+                    {"Type": "TERM_MATCH", "Field": "preInstalledSw", "Value": "NA"},
+                    {"Type": "TERM_MATCH", "Field": "capacitystatus", "Value": "Used"},
+                ],
+                FormatVersion="aws_v1",
+                MaxResults=1,
+            )
+            if not response.get("PriceList"):
+                return None
+
+            product = json.loads(response["PriceList"][0])
+            for offer_term in product["terms"]["OnDemand"].values():
+                for dimension in offer_term["priceDimensions"].values():
+                    if dimension["unit"] == "Hrs":
+                        return float(dimension["pricePerUnit"]["USD"])
+            return None
+        except Exception as e:
+            logger.error(f"Failed to fetch price for {instance_type}: {e}")
+            return None
+
+
+    def refresh_loop():
+        global last_refresh_time, is_stale
+
+        region = os.environ.get("AWS_REGION", "us-east-1")
+        instance_types = [t.strip() for t in os.environ.get("INSTANCE_TYPES", "g6e.2xlarge").split(",")]
+        interval = int(os.environ.get("REFRESH_INTERVAL_HOURS", "6")) * 3600
+        location = REGION_TO_LOCATION.get(region, "US East (N. Virginia)")
+
+        # Pricing API is only available in us-east-1
+        client = boto3.client("pricing", region_name="us-east-1")
+
+        while True:
+            logger.info(f"Refreshing prices for {instance_types} in {location}...")
+            success = False
+
+            for instance_type in instance_types:
+                price = fetch_price(client, instance_type, location)
+                if price is not None:
+                    config = GPU_CONFIGS.get(instance_type, {"gpus": 1, "gpu_model": "unknown"})
+                    per_gpu_price = price / config["gpus"]
+
+                    gpu_price_per_hour.labels(
+                        instance_type=instance_type,
+                        region=region,
+                        gpu_model=config["gpu_model"]
+                    ).set(per_gpu_price)
+
+                    gpu_price_stale.labels(instance_type=instance_type, region=region).set(0)
+                    success = True
+                    logger.info(f"  {instance_type}: ${price:.2f}/hr instance, ${per_gpu_price:.2f}/hr per GPU")
+                else:
+                    gpu_price_stale.labels(instance_type=instance_type, region=region).set(1)
+                    logger.warning(f"  {instance_type}: no price data")
+
+            if success:
+                last_refresh_time = time.time()
+                is_stale = False
+            else:
+                is_stale = True
+
+            logger.info(f"Next refresh in {interval//3600}h")
+            time.sleep(interval)
+
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/metrics":
+                self.send_response(200)
+                self.send_header("Content-Type", CONTENT_TYPE_LATEST)
+                self.end_headers()
+                self.wfile.write(generate_latest())
+            elif self.path == "/healthz":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok")
+            elif self.path == "/readyz":
+                self.send_response(200 if last_refresh_time > 0 else 503)
+                self.end_headers()
+                self.wfile.write(b"ready" if last_refresh_time > 0 else b"not ready")
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+
+    if __name__ == "__main__":
+        threading.Thread(target=refresh_loop, daemon=True).start()
+        server = HTTPServer(("0.0.0.0", 9100), Handler)
+        logger.info("Serving metrics on :9100/metrics")
+        server.serve_forever()

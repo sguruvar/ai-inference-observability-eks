@@ -20,7 +20,7 @@ data:
           "title": "GPU Cost per Hour by DGD",
           "type": "table",
           "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "targets": [
             {
               "expr": "deployment:gpu_cost_per_hour:sum",
@@ -38,7 +38,7 @@ data:
           "title": "GPU Waste % by DGD",
           "type": "gauge",
           "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "targets": [
             {
               "expr": "deployment:gpu_waste_fraction:ratio * 100",
@@ -64,7 +64,7 @@ data:
           "title": "GPU Utilization Over Time (per pod)",
           "type": "timeseries",
           "gridPos": {"h": 10, "w": 24, "x": 0, "y": 8},
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "targets": [
             {
               "expr": "pod:gpu_utilization:avg5m",
@@ -79,7 +79,7 @@ data:
           "title": "Allocated vs Effective Cost",
           "type": "barchart",
           "gridPos": {"h": 8, "w": 12, "x": 0, "y": 18},
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "targets": [
             {
               "expr": "deployment:gpu_cost_per_hour:sum",
@@ -96,7 +96,7 @@ data:
           "title": "GPU Price per Hour (from AWS Price List API)",
           "type": "stat",
           "gridPos": {"h": 8, "w": 12, "x": 12, "y": 18},
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "targets": [
             {
               "expr": "gpu_price_per_hour",
@@ -109,7 +109,7 @@ data:
           "title": "DCGM Power Draw by Pod",
           "type": "timeseries",
           "gridPos": {"h": 8, "w": 24, "x": 0, "y": 26},
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "targets": [
             {
               "expr": "DCGM_FI_DEV_POWER_USAGE{pod!=\"\",namespace=\"dynamo-system\"}",
@@ -122,7 +122,7 @@ data:
       "refresh": "30s",
       "schemaVersion": 39,
       "tags": ["gpu", "cost", "dynamo"],
-      "templating": {"list": []},
+      "templating": {"list": [{"name": "DS_PROMETHEUS", "type": "datasource", "query": "prometheus", "current": {"text": "Prometheus", "value": "prometheus"}, "hide": 0}]},
       "time": {"from": "now-30m", "to": "now"},
       "title": "GPU Cost Attribution — Per DGD",
       "uid": "gpu-cost-attribution"

@@ -39,7 +39,7 @@ echo "Workers will download Qwen3-0.6B (~1.2GB) on first start."
 echo ""
 
 for i in $(seq 1 60); do
-  RUNNING=$(kubectl get pods -n "$DYNAMO_NS" -l nvidia.com/dynamo-graph-deployment-name --no-headers 2>/dev/null | grep -c "Running" || echo "0")
+  RUNNING=$(kubectl get pods -n "$DYNAMO_NS" -l nvidia.com/dynamo-graph-deployment-name --no-headers 2>/dev/null | grep "Running" | wc -l | tr -d ' ')
   if [ "$RUNNING" -ge 3 ]; then
     echo "  All inference pods running ($RUNNING pods)"
     break

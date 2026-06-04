@@ -25,8 +25,6 @@ spec:
         limits:
           gpu: "1"
       extraPodSpec:
-        nodeSelector:
-          node.kubernetes.io/instance-type: g6e.2xlarge
         tolerations:
           - key: "nvidia.com/gpu"
             operator: "Exists"

@@ -28,7 +28,7 @@ spec:
               echo "Long prompts, continuous requests, 10 min duration"
               echo ""
 
-              ENDPOINT="http://vllm-disagg-frontend:8000"
+              ENDPOINT="http://vllm-agg-frontend:8000"
               DURATION=600
               START=$(date +%s)
               COUNT=0
@@ -43,9 +43,9 @@ spec:
                   break
                 fi
 
-                curl -s "$ENDPOINT/v1/chat/completions" \
+                curl -s "$ENDPOINT/v1/completions" \
                   -H "Content-Type: application/json" \
-                  -d "{\"model\":\"Qwen/Qwen3-0.6B\",\"messages\":[{\"role\":\"user\",\"content\":\"$PROMPT\"}],\"max_tokens\":200,\"stream\":false}" \
+                  -d "{\"model\":\"Qwen/Qwen3-0.6B\",\"prompt\":\"$PROMPT\",\"max_tokens\":200}" \
                   -o /dev/null -w "req=$COUNT status=%{http_code} time=%{time_total}s\n" \
                   --max-time 30
 

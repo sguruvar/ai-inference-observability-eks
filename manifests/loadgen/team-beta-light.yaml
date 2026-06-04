@@ -41,9 +41,9 @@ spec:
                   break
                 fi
 
-                curl -s "$ENDPOINT/v1/chat/completions" \
+                curl -s "$ENDPOINT/v1/completions" \
                   -H "Content-Type: application/json" \
-                  -d '{"model":"Qwen/Qwen3-0.6B","messages":[{"role":"user","content":"Say hello."}],"max_tokens":10,"stream":false}' \
+                  -d '{"model":"Qwen/Qwen3-0.6B","prompt":"Say hello.","max_tokens":10}' \
                   -o /dev/null -w "req=$COUNT status=%{http_code} time=%{time_total}s\n" \
                   --max-time 10
 

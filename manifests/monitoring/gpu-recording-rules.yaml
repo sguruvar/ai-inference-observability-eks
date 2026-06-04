@@ -49,7 +49,7 @@ spec:
           expr: |
             deployment:gpu_allocated:count
             * on() group_left()
-            gpu_price_per_hour{instance_type="g6e.2xlarge"}
+            min(gpu_price_per_hour)
 
         - record: deployment:gpu_effective_cost_per_hour:sum
           expr: |

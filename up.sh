@@ -41,17 +41,20 @@ echo "=== [1/8] Creating EKS cluster + p4d GPU node group (~15 min) ==="
 # Clean up any leftover CF stacks from failed previous runs
 EXISTING_STACK=$(aws cloudformation describe-stacks --stack-name "eksctl-${CLUSTER_NAME}-cluster" \
   --region "$AWS_REGION" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "NONE")
-if [ "$EXISTING_STACK" = "DELETE_FAILED" ]; then
-  echo "  Cleaning up failed stack from previous run..."
-  VPC_ID=$(aws cloudformation describe-stack-resources --stack-name "eksctl-${CLUSTER_NAME}-cluster" \
-    --region "$AWS_REGION" --query "StackResources[?LogicalResourceId=='VPC'].PhysicalResourceId" --output text 2>/dev/null || echo "")
-  if [ -n "$VPC_ID" ]; then
-    aws ec2 describe-security-groups --region "$AWS_REGION" --filters "Name=vpc-id,Values=$VPC_ID" \
-      --query "SecurityGroups[?GroupName!='default'].GroupId" --output text 2>/dev/null | tr '\t' '\n' | while read SG; do
-      [ -n "$SG" ] && aws ec2 delete-security-group --group-id "$SG" --region "$AWS_REGION" 2>/dev/null || true
-    done
+if [ "$EXISTING_STACK" != "NONE" ]; then
+  echo "  Found existing stack (status: $EXISTING_STACK). Cleaning up..."
+  if [ "$EXISTING_STACK" = "DELETE_FAILED" ]; then
+    VPC_ID=$(aws cloudformation describe-stack-resources --stack-name "eksctl-${CLUSTER_NAME}-cluster" \
+      --region "$AWS_REGION" --query "StackResources[?LogicalResourceId=='VPC'].PhysicalResourceId" --output text 2>/dev/null || echo "")
+    if [ -n "$VPC_ID" ]; then
+      aws ec2 describe-security-groups --region "$AWS_REGION" --filters "Name=vpc-id,Values=$VPC_ID" \
+        --query "SecurityGroups[?GroupName!='default'].GroupId" --output text 2>/dev/null | tr '\t' '\n' | while read SG; do
+        [ -n "$SG" ] && aws ec2 delete-security-group --group-id "$SG" --region "$AWS_REGION" 2>/dev/null || true
+      done
+    fi
+    aws cloudformation delete-stack --stack-name "eksctl-${CLUSTER_NAME}-cluster" --region "$AWS_REGION" 2>/dev/null || true
   fi
-  aws cloudformation delete-stack --stack-name "eksctl-${CLUSTER_NAME}-cluster" --region "$AWS_REGION" 2>/dev/null || true
+  echo "  Waiting for old stack to finish deleting..."
   aws cloudformation wait stack-delete-complete --stack-name "eksctl-${CLUSTER_NAME}-cluster" --region "$AWS_REGION" 2>/dev/null || true
 fi
 

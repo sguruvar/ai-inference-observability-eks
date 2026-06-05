@@ -22,8 +22,10 @@ spec:
       resources:
         requests:
           gpu: "1"
+          gpuType: "nvidia.com/mig-3g.20gb"
         limits:
           gpu: "1"
+          gpuType: "nvidia.com/mig-3g.20gb"
       extraPodSpec:
         tolerations:
           - key: "nvidia.com/gpu"

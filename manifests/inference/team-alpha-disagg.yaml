@@ -1,5 +1,5 @@
-# Team Alpha: Disaggregated serving (prefill + decode separation)
-# Deployed in dynamo-system (operator/NATS access) with team label for cost attribution
+# Team Alpha: Disaggregated serving (prefill + decode on separate MIG slices)
+# Each worker gets one MIG slice (3g.40gb = 3/7 compute + 40GB memory on A100)
 apiVersion: nvidia.com/v1alpha1
 kind: DynamoGraphDeployment
 metadata:

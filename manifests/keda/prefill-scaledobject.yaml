@@ -1,0 +1,41 @@
+# KEDA ScaledObject for PrefillWorkers
+# Scales on request queue depth — when requests pile up, add prefill capacity
+# Scale-to-zero is SAFE for prefill (stateless, no active sessions)
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: prefill-scaler
+  namespace: dynamo-system
+spec:
+  scaleTargetRef:
+    name: vllm-disagg-vllmprefillworker  # Deployment created by Dynamo operator
+  pollingInterval: 15
+  cooldownPeriod: 60
+  minReplicaCount: 0
+  maxReplicaCount: 4
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+        query: |
+          sum(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod=~".*prefill.*",namespace="dynamo-system"})
+        threshold: "0.7"
+        activationThreshold: "0.1"
+      authenticationRef:
+        name: ""
+  advanced:
+    restoreToOriginalReplicaCount: false
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 30
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 30
+        scaleDown:
+          stabilizationWindowSeconds: 120
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60

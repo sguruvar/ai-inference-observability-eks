@@ -28,7 +28,7 @@ spec:
               echo "Long prompts, continuous requests, 10 min duration"
               echo ""
 
-              ENDPOINT="http://vllm-agg-frontend:8000"
+              ENDPOINT="http://vllm-disagg-frontend:8000"
               DURATION=600
               START=$(date +%s)
               COUNT=0

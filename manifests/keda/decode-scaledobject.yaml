@@ -1,0 +1,39 @@
+# KEDA ScaledObject for DecodeWorkers
+# Scales on GPU memory pressure — when KV caches fill VRAM, add decode capacity
+# Scale-to-zero is NOT SAFE for decode (active generations hold KV cache state)
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: decode-scaler
+  namespace: dynamo-system
+spec:
+  scaleTargetRef:
+    name: vllm-disagg-vllmdecodeworker  # Deployment created by Dynamo operator
+  pollingInterval: 30
+  cooldownPeriod: 120
+  minReplicaCount: 1
+  maxReplicaCount: 4
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+        query: |
+          avg(DCGM_FI_DEV_FB_USED{pod=~".*decode.*",namespace="dynamo-system"} / (DCGM_FI_DEV_FB_USED{pod=~".*decode.*",namespace="dynamo-system"} + DCGM_FI_DEV_FB_FREE{pod=~".*decode.*",namespace="dynamo-system"}))
+        threshold: "0.8"
+        activationThreshold: "0.3"
+  advanced:
+    restoreToOriginalReplicaCount: false
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 60
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120

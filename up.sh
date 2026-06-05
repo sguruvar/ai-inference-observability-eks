@@ -44,6 +44,19 @@ EXISTING_STACK=$(aws cloudformation describe-stacks --stack-name "eksctl-${CLUST
 if [ "$EXISTING_STACK" != "NONE" ]; then
   echo "  Found existing stack (status: $EXISTING_STACK). Cleaning up..."
   if [ "$EXISTING_STACK" = "DELETE_FAILED" ]; then
+    # Delete EFS mount targets first (they hold VPC security groups)
+    OLD_EFS=$(aws efs describe-file-systems --region "$AWS_REGION" \
+      --query "FileSystems[?Tags[?Key=='Name'&&Value=='${CLUSTER_NAME}-models']].FileSystemId" --output text 2>/dev/null || echo "")
+    if [ -n "$OLD_EFS" ] && [ "$OLD_EFS" != "None" ]; then
+      echo "  Cleaning up leftover EFS $OLD_EFS..."
+      aws efs describe-mount-targets --file-system-id "$OLD_EFS" --region "$AWS_REGION" \
+        --query 'MountTargets[].MountTargetId' --output text 2>/dev/null | tr '\t' '\n' | while read MT; do
+        [ -n "$MT" ] && aws efs delete-mount-target --mount-target-id "$MT" --region "$AWS_REGION" 2>/dev/null || true
+      done
+      sleep 30
+      aws efs delete-file-system --file-system-id "$OLD_EFS" --region "$AWS_REGION" 2>/dev/null || true
+    fi
+    # Now delete orphaned security groups
     VPC_ID=$(aws cloudformation describe-stack-resources --stack-name "eksctl-${CLUSTER_NAME}-cluster" \
       --region "$AWS_REGION" --query "StackResources[?LogicalResourceId=='VPC'].PhysicalResourceId" --output text 2>/dev/null || echo "")
     if [ -n "$VPC_ID" ]; then

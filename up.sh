@@ -104,6 +104,7 @@ metadata:
 managedNodeGroups:
   - name: gpu-mig
     instanceType: p4d.24xlarge
+    privateNetworking: true
     desiredCapacity: 1
     minSize: 0
     maxSize: 2
@@ -120,6 +121,30 @@ managedNodeGroups:
 EOF
 
 eksctl create nodegroup -f /tmp/eksctl-gpu-ng.yaml
+
+# Fix NAT routing: managed nodegroups may land in public subnet without public IP
+# Find the GPU node's subnet and ensure it routes through NAT gateway
+echo "  Fixing NAT route for GPU subnet..."
+sleep 10  # Wait for node to register
+GPU_NODE_IP=$(kubectl get nodes -l workload=gpu -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "")
+if [ -n "$GPU_NODE_IP" ]; then
+  GPU_SUBNET=$(aws ec2 describe-instances --region "$AWS_REGION" \
+    --filters "Name=private-ip-address,Values=$GPU_NODE_IP" \
+    --query 'Reservations[].Instances[].SubnetId' --output text 2>/dev/null)
+  VPC_ID=$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" \
+    --query 'cluster.resourcesVpcConfig.vpcId' --output text)
+  NAT_GW=$(aws ec2 describe-nat-gateways --region "$AWS_REGION" \
+    --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available" \
+    --query 'NatGateways[0].NatGatewayId' --output text 2>/dev/null)
+  GPU_RT=$(aws ec2 describe-route-tables --region "$AWS_REGION" \
+    --filters "Name=association.subnet-id,Values=$GPU_SUBNET" \
+    --query 'RouteTables[0].RouteTableId' --output text 2>/dev/null)
+  if [ -n "$NAT_GW" ] && [ "$NAT_GW" != "None" ] && [ -n "$GPU_RT" ]; then
+    aws ec2 replace-route --route-table-id "$GPU_RT" --destination-cidr-block 0.0.0.0/0 \
+      --nat-gateway-id "$NAT_GW" --region "$AWS_REGION" 2>/dev/null || true
+    echo "  GPU subnet routed through NAT gateway"
+  fi
+fi
 
 # Default StorageClass for NATS/etcd PVCs
 kubectl apply -f - <<EOF
@@ -173,16 +198,37 @@ helm upgrade --install gpu-operator nvidia/gpu-operator \
 echo ""
 echo "  Waiting for MIG configuration on GPU node..."
 echo "  (MIG Manager reads nvidia.com/mig.config label → configures GPUs → node reboots)"
-for i in $(seq 1 60); do
-  MIG_READY=$(kubectl get nodes -l workload=gpu -o jsonpath='{.items[0].status.allocatable.nvidia\.com/mig-3g\.40gb}' 2>/dev/null || echo "0")
-  if [ "$MIG_READY" != "0" ] && [ -n "$MIG_READY" ]; then
-    echo "  MIG configured: $MIG_READY slices available"
+for i in $(seq 1 90); do
+  MIG_STATE=$(kubectl get nodes -l workload=gpu -o jsonpath='{.items[0].metadata.labels.nvidia\.com/mig\.config\.state}' 2>/dev/null || echo "")
+  if [ "$MIG_STATE" = "success" ]; then
+    MIG_SLICES=$(kubectl get nodes -l workload=gpu -o jsonpath='{.items[0].status.allocatable.nvidia\.com/mig-3g\.20gb}' 2>/dev/null || echo "0")
+    echo "  MIG configured: $MIG_SLICES slices available (state: success)"
     break
   fi
   if [ "$((i % 10))" -eq 0 ]; then
-    echo "  Waiting for MIG... (attempt $i/60)"
+    echo "  Waiting for MIG... state=$MIG_STATE (attempt $i/90)"
   fi
   sleep 10
+done
+
+# Post-MIG cleanup: remove stale unreachable taint from reboot
+echo "  Removing stale taints from MIG reboot..."
+kubectl taint nodes -l workload=gpu node.kubernetes.io/unreachable- 2>/dev/null || true
+kubectl taint nodes -l workload=gpu node.kubernetes.io/not-ready- 2>/dev/null || true
+
+# Restart device plugin to pick up MIG device inventory
+echo "  Restarting device plugin for MIG slice allocation..."
+kubectl rollout restart daemonset/nvidia-device-plugin-daemonset -n gpu-operator 2>/dev/null || true
+kubectl rollout status daemonset/nvidia-device-plugin-daemonset -n gpu-operator --timeout=120s 2>/dev/null || true
+
+# Wait for node to re-advertise MIG slices after device plugin restart
+for i in $(seq 1 30); do
+  MIG_SLICES=$(kubectl get nodes -l workload=gpu -o jsonpath='{.items[0].status.allocatable.nvidia\.com/mig-3g\.20gb}' 2>/dev/null || echo "0")
+  if [ "$MIG_SLICES" != "0" ] && [ -n "$MIG_SLICES" ]; then
+    echo "  Device plugin ready: $MIG_SLICES MIG slices allocatable"
+    break
+  fi
+  sleep 5
 done
 
 echo ""

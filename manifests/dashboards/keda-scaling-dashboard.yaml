@@ -82,14 +82,14 @@ data:
           "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}}
         },
         {
-          "title": "MIG Slices — Allocated vs Available",
+          "title": "Total GPU Capacity (cluster)",
           "type": "stat",
           "gridPos": {"h": 6, "w": 8, "x": 0, "y": 16},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "targets": [
             {
               "expr": "sum(kube_node_status_capacity{resource=~\"nvidia.com.*gpu.*\"})",
-              "legendFormat": "total GPU/MIG capacity"
+              "legendFormat": "total GPUs"
             }
           ],
           "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}}

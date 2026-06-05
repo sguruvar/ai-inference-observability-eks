@@ -1,5 +1,5 @@
-# Team Alpha: Disaggregated serving (prefill + decode on separate MIG slices)
-# Each worker gets one MIG slice (3g.40gb = 3/7 compute + 40GB memory on A100)
+# Team Alpha: Disaggregated serving on MIG slices
+# PrefillWorker + DecodeWorker each get one 3g.40gb MIG slice (3/7 compute + 40GB)
 apiVersion: nvidia.com/v1alpha1
 kind: DynamoGraphDeployment
 metadata:

@@ -1,26 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ONE COMMAND: creates cluster, installs everything, deploys inference, starts load.
-# Usage: export HF_TOKEN="hf_xxx" && ./up.sh
-# Cost: ~$35/hr on-demand (p4d.24xlarge + system nodes)
+# ONE COMMAND: creates full stack from zero.
+#
+# Components:
+#   - EKS cluster (Auto Mode for system, Managed Node Group for GPU/MIG)
+#   - GPU Operator with MIG Manager (configures A100 MIG slices)
+#   - NVIDIA Dynamo (disaggregated inference: prefill + decode on MIG slices)
+#   - Prometheus + Grafana (exposed via LoadBalancer — no port-forward needed)
+#   - KEDA (autoscales prefill/decode independently)
+#   - Admission Webhooks (validates team label, mutates GPU tolerations)
+#   - Load generators (heavy vs light traffic patterns)
+#
+# Usage:
+#   export HF_TOKEN="hf_xxx" && ./up.sh
+#
+# Cost: ~$35/hr (p4d.24xlarge on-demand + system nodes)
 # Time: ~20 min to fully operational
+# Destroy: ./down.sh
 
 export AWS_REGION="${AWS_REGION:-us-west-2}"
 export CLUSTER_NAME="${CLUSTER_NAME:-gpu-mig-demo}"
 export DYNAMO_NS="${DYNAMO_NS:-dynamo-system}"
 HF_TOKEN="${HF_TOKEN:?ERROR: Set HF_TOKEN (https://huggingface.co/settings/tokens)}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 echo "============================================"
-echo " GPU Cost Attribution + MIG + KEDA Demo"
+echo " GPU Cost Attribution + MIG + KEDA + Webhooks"
 echo " Region:  $AWS_REGION"
 echo " Cluster: $CLUSTER_NAME"
-echo " Cost:    ~\$35/hr (p4d.24xlarge on-demand)"
+echo " GPU:     p4d.24xlarge (8× A100 40GB, MIG)"
+echo " Cost:    ~\$35/hr on-demand"
 echo "============================================"
 echo ""
 
-# ─── Step 1: EKS Cluster ───────────────────────────────────────────────────────
-echo "=== [1/7] Creating EKS Auto Mode cluster (~12 min) ==="
+# ─── Step 1: EKS Cluster with Managed GPU Node Group ──────────────────────────
+echo "=== [1/8] Creating EKS cluster + p4d GPU node group (~15 min) ==="
 
 EKS_CP_AZS=$(aws ec2 describe-availability-zones \
   --region "${AWS_REGION}" \
@@ -31,13 +47,17 @@ EKS_CP_AZS=$(aws ec2 describe-availability-zones \
 cat <<EOF > /tmp/eksctl-cluster.yaml
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
+
 metadata:
   name: ${CLUSTER_NAME}
   region: ${AWS_REGION}
+
 availabilityZones:
 ${EKS_CP_AZS}
+
 autoModeConfig:
   enabled: true
+
 addons:
   - name: aws-efs-csi-driver
     version: latest
@@ -46,39 +66,34 @@ EOF
 
 eksctl create cluster -f /tmp/eksctl-cluster.yaml
 
-# GPU NodePool — targets p4d (A100, MIG-capable) on-demand
-kubectl apply -f - <<EOF
-apiVersion: karpenter.sh/v1
-kind: NodePool
+echo "  Adding GPU managed node group (p4d.24xlarge)..."
+cat <<EOF > /tmp/eksctl-gpu-ng.yaml
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
 metadata:
-  name: gpu-mig
-spec:
-  disruption:
-    budgets:
-      - nodes: 10%
-    consolidateAfter: 600s
-    consolidationPolicy: WhenEmptyOrUnderutilized
-  template:
-    spec:
-      nodeClassRef:
-        group: eks.amazonaws.com
-        kind: NodeClass
-        name: default
-      requirements:
-        - key: karpenter.sh/capacity-type
-          operator: In
-          values:
-            - on-demand
-        - key: eks.amazonaws.com/instance-family
-          operator: In
-          values:
-            - p4d
-            - p5
-      taints:
-        - effect: NoSchedule
-          key: nvidia.com/gpu
-          value: "true"
+  name: ${CLUSTER_NAME}
+  region: ${AWS_REGION}
+
+managedNodeGroups:
+  - name: gpu-mig
+    instanceType: p4d.24xlarge
+    desiredCapacity: 1
+    minSize: 0
+    maxSize: 2
+    labels:
+      workload: gpu
+      nvidia.com/mig.config: all-3g.40gb
+    taints:
+      - key: nvidia.com/gpu
+        value: "true"
+        effect: NoSchedule
+    iam:
+      withAddonPolicies:
+        ebs: true
 EOF
+
+eksctl create nodegroup -f /tmp/eksctl-gpu-ng.yaml
 
 # Default StorageClass for NATS/etcd PVCs
 kubectl apply -f - <<EOF
@@ -101,7 +116,8 @@ parameters:
 EOF
 
 echo ""
-echo "=== [2/7] Installing GPU Operator + MIG (~3 min) ==="
+# ─── Step 2: GPU Operator + MIG ───────────────────────────────────────────────
+echo "=== [2/8] Installing GPU Operator + MIG Manager (~5 min) ==="
 
 helm repo add nvidia https://helm.ngc.nvidia.com/nvidia 2>/dev/null || true
 helm repo update nvidia
@@ -129,7 +145,23 @@ helm upgrade --install gpu-operator nvidia/gpu-operator \
   --wait --timeout=600s
 
 echo ""
-echo "=== [3/7] Installing Dynamo Platform (~3 min) ==="
+echo "  Waiting for MIG configuration on GPU node..."
+echo "  (MIG Manager reads nvidia.com/mig.config label → configures GPUs → node reboots)"
+for i in $(seq 1 60); do
+  MIG_READY=$(kubectl get nodes -l workload=gpu -o jsonpath='{.items[0].status.allocatable.nvidia\.com/mig-3g\.40gb}' 2>/dev/null || echo "0")
+  if [ "$MIG_READY" != "0" ] && [ -n "$MIG_READY" ]; then
+    echo "  MIG configured: $MIG_READY slices available"
+    break
+  fi
+  if [ "$((i % 10))" -eq 0 ]; then
+    echo "  Waiting for MIG... (attempt $i/60)"
+  fi
+  sleep 10
+done
+
+echo ""
+# ─── Step 3: Dynamo Platform ──────────────────────────────────────────────────
+echo "=== [3/8] Installing Dynamo Platform (~3 min) ==="
 
 helm repo add nvidia-dynamo https://helm.ngc.nvidia.com/nvidia/ai-dynamo 2>/dev/null || true
 helm repo update nvidia-dynamo
@@ -153,7 +185,7 @@ EFS_ID=$(aws efs create-file-system --region "$AWS_REGION" \
   --tags Key=Name,Value="${CLUSTER_NAME}-models" \
   --query 'FileSystemId' --output text)
 
-echo "  EFS: $EFS_ID — waiting for available..."
+echo "  EFS: $EFS_ID"
 for i in $(seq 1 30); do
   STATE=$(aws efs describe-file-systems --file-system-id "$EFS_ID" --region "$AWS_REGION" \
     --query 'FileSystems[0].LifeCycleState' --output text)
@@ -212,7 +244,8 @@ helm upgrade --install dynamo-platform nvidia-dynamo/dynamo-platform \
   --version 1.1.1 --namespace "$DYNAMO_NS" --wait --timeout=300s
 
 echo ""
-echo "=== [4/7] Installing Monitoring (Prometheus + Grafana) (~2 min) ==="
+# ─── Step 4: Monitoring (Prometheus + Grafana via LoadBalancer) ────────────────
+echo "=== [4/8] Installing Monitoring (Grafana exposed via LoadBalancer) (~3 min) ==="
 
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
 helm repo update prometheus-community
@@ -229,13 +262,17 @@ helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
   --set grafana.adminPassword=prom-operator \
   --set grafana.sidecar.dashboards.enabled=true \
   --set grafana.sidecar.dashboards.label=grafana_dashboard \
+  --set grafana.service.type=LoadBalancer \
+  --set-string grafana.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-scheme"=internet-facing \
+  --set-string grafana.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"=external \
+  --set-string grafana.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-nlb-target-type"=ip \
   --set alertmanager.enabled=true \
   --wait --timeout=300s
 
-# Recording rules, alerting rules, dashboards
-kubectl apply -f manifests/monitoring/gpu-recording-rules.yaml
-kubectl apply -f manifests/monitoring/gpu-alerting-rules.yaml
-kubectl apply -f manifests/dashboards/
+# Apply recording rules, alerting rules, dashboards
+kubectl apply -f "$SCRIPT_DIR/manifests/monitoring/gpu-recording-rules.yaml"
+kubectl apply -f "$SCRIPT_DIR/manifests/monitoring/gpu-alerting-rules.yaml"
+kubectl apply -f "$SCRIPT_DIR/manifests/dashboards/"
 
 # Pricing exporter with Pod Identity
 ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
@@ -253,12 +290,13 @@ aws eks create-pod-identity-association --cluster-name "$CLUSTER_NAME" \
   --namespace monitoring --service-account gpu-pricing-exporter \
   --role-arn "$ROLE_ARN" --region "$AWS_REGION" 2>/dev/null || true
 
-sed "s|ROLE_ARN_PLACEHOLDER|$ROLE_ARN|g" manifests/pricing-exporter/deployment.yaml | kubectl apply -f -
-kubectl apply -f manifests/pricing-exporter/service.yaml
-kubectl apply -f manifests/pricing-exporter/servicemonitor.yaml
+sed "s|ROLE_ARN_PLACEHOLDER|$ROLE_ARN|g" "$SCRIPT_DIR/manifests/pricing-exporter/deployment.yaml" | kubectl apply -f -
+kubectl apply -f "$SCRIPT_DIR/manifests/pricing-exporter/service.yaml"
+kubectl apply -f "$SCRIPT_DIR/manifests/pricing-exporter/servicemonitor.yaml"
 
 echo ""
-echo "=== [5/7] Installing KEDA (~1 min) ==="
+# ─── Step 5: KEDA ─────────────────────────────────────────────────────────────
+echo "=== [5/8] Installing KEDA (~1 min) ==="
 
 helm repo add kedacore https://kedacore.github.io/charts 2>/dev/null || true
 helm repo update kedacore
@@ -268,47 +306,111 @@ helm upgrade --install keda kedacore/keda \
   --wait --timeout=120s
 
 echo ""
-echo "=== [6/7] Deploying Inference (DGDs) ==="
+# ─── Step 6: Admission Webhooks ───────────────────────────────────────────────
+echo "=== [6/8] Deploying Admission Webhooks (~2 min) ==="
 
-kubectl apply -f manifests/inference/team-alpha-disagg.yaml
-kubectl apply -f manifests/inference/team-beta-agg.yaml
+# Install cert-manager (needed for webhook TLS)
+helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
+helm repo update jetstack
+helm upgrade --install cert-manager jetstack/cert-manager \
+  -n cert-manager --create-namespace \
+  --set crds.enabled=true \
+  --wait --timeout=120s
+
+# Build and push webhook image to ECR
+ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+ECR_REPO="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${CLUSTER_NAME}-webhook"
+
+aws ecr create-repository --repository-name "${CLUSTER_NAME}-webhook" \
+  --region "$AWS_REGION" 2>/dev/null || true
+aws ecr get-login-password --region "$AWS_REGION" | \
+  docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+docker build -t "$ECR_REPO:latest" "$SCRIPT_DIR/webhook/"
+docker push "$ECR_REPO:latest"
+
+# Deploy webhook
+sed "s|GPU_WEBHOOK_IMAGE_PLACEHOLDER|$ECR_REPO:latest|g" \
+  "$SCRIPT_DIR/manifests/webhook/deployment.yaml" | kubectl apply -f -
+
+# Wait for namespace to exist, then create cert
+kubectl wait --for=condition=Ready pod -l app.kubernetes.io/instance=cert-manager \
+  -n cert-manager --timeout=60s 2>/dev/null || true
+sleep 5
+kubectl apply -f "$SCRIPT_DIR/manifests/webhook/certificate.yaml"
+
+# Wait for cert to be ready
+echo "  Waiting for TLS certificate..."
+for i in $(seq 1 30); do
+  CERT_READY=$(kubectl get certificate gpu-webhook-cert -n gpu-webhook \
+    -o jsonpath='{.status.conditions[0].status}' 2>/dev/null || echo "False")
+  [ "$CERT_READY" = "True" ] && break
+  sleep 5
+done
+
+# Restart webhook to pick up cert
+kubectl rollout restart deployment/gpu-webhook -n gpu-webhook 2>/dev/null || true
+kubectl rollout status deployment/gpu-webhook -n gpu-webhook --timeout=60s 2>/dev/null || true
+
+# Register webhooks with API server
+kubectl apply -f "$SCRIPT_DIR/manifests/webhook/webhook-config.yaml"
+
+echo "  Webhooks registered:"
+echo "    - ValidatingWebhook: rejects GPU pods without 'team' label"
+echo "    - MutatingWebhook: injects GPU toleration + cost annotation"
 
 echo ""
-echo "  Waiting for GPU node + MIG configuration..."
-echo "  (p4d.24xlarge takes 3-5 min to provision + configure MIG)"
-echo ""
+# ─── Step 7: Deploy Inference (DGDs) ──────────────────────────────────────────
+echo "=== [7/8] Deploying Inference (DGDs on MIG slices) ==="
 
+kubectl apply -f "$SCRIPT_DIR/manifests/inference/team-alpha-disagg.yaml"
+kubectl apply -f "$SCRIPT_DIR/manifests/inference/team-beta-agg.yaml"
+
+echo "  Waiting for inference pods..."
 for i in $(seq 1 90); do
-  RUNNING=$(kubectl get pods -n "$DYNAMO_NS" -l nvidia.com/dynamo-graph-deployment-name --no-headers 2>/dev/null | { grep "Running" || true; } | wc -l | tr -d ' ')
+  RUNNING=$(kubectl get pods -n "$DYNAMO_NS" -l nvidia.com/dynamo-graph-deployment-name \
+    --no-headers 2>/dev/null | { grep "Running" || true; } | wc -l | tr -d ' ')
   if [ "$RUNNING" -ge 3 ]; then
     echo "  Inference pods running ($RUNNING pods)"
     break
   fi
   if [ "$((i % 15))" -eq 0 ]; then
     echo "  Waiting... $RUNNING pods running (attempt $i/90)"
-    kubectl get nodes --no-headers 2>/dev/null | awk '{print "    node: "$1, $2, $5}'
   fi
   sleep 10
 done
 
 echo ""
-echo "=== [7/7] Deploying KEDA ScaledObjects + Load Generators ==="
+# ─── Step 8: KEDA ScaledObjects + Load Generators ─────────────────────────────
+echo "=== [8/8] Deploying KEDA ScaledObjects + Load Generators ==="
 
-kubectl apply -f manifests/keda/
-kubectl apply -f manifests/loadgen/
+kubectl apply -f "$SCRIPT_DIR/manifests/keda/"
+kubectl apply -f "$SCRIPT_DIR/manifests/loadgen/"
 
 echo ""
+# ─── Done ─────────────────────────────────────────────────────────────────────
+GRAFANA_URL=$(kubectl get svc prometheus-grafana -n monitoring \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+
 echo "============================================"
 echo " CLUSTER READY"
 echo "============================================"
 echo ""
-echo " Grafana:  kubectl port-forward svc/prometheus-grafana 3000:80 -n monitoring"
-echo "           http://localhost:3000 (admin / prom-operator)"
+echo " Grafana:    http://${GRAFANA_URL}"
+echo "             Login: admin / prom-operator"
+echo "             (LoadBalancer may take 2 min to provision)"
 echo ""
-echo " Prometheus: kubectl port-forward svc/prometheus-kube-prometheus-prometheus 9090:9090 -n monitoring"
+echo " Dashboards:"
+echo "   - GPU Cost Attribution: /d/gpu-cost-attribution"
+echo "   - Disaggregated Inference: /d/dynamo-disagg"
+echo "   - KEDA GPU Autoscaling: /d/keda-gpu-scaling"
 echo ""
-echo " Validate:  ./scripts/07-validate.sh"
-echo " Destroy:   ./down.sh"
+echo " MIG Slices: kubectl get nodes -l workload=gpu -o jsonpath='{.items[*].status.allocatable}' | python3 -m json.tool | grep mig"
 echo ""
+echo " Test webhook:"
+echo "   kubectl run bad-pod -n dynamo-system --image=nginx --overrides='{\"spec\":{\"containers\":[{\"name\":\"c\",\"image\":\"nginx\",\"resources\":{\"limits\":{\"nvidia.com/gpu\":\"1\"}}}]}}'"
+echo "   → should be REJECTED (missing team label)"
+echo ""
+echo " Destroy: ./down.sh"
 echo " Cost: ~\$35/hr — DESTROY WHEN DONE"
 echo "============================================"

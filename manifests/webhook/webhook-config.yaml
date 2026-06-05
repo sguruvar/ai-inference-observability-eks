@@ -1,0 +1,58 @@
+# ValidatingWebhookConfiguration — rejects GPU pods without 'team' label
+# The caBundle is injected by cert-manager via the annotation
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: gpu-team-label-validator
+  annotations:
+    cert-manager.io/inject-ca-from: gpu-webhook/gpu-webhook-cert
+webhooks:
+  - name: validate.gpu.cost-attribution.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system", "gpu-operator", "monitoring", "keda", "gpu-webhook"]
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+    clientConfig:
+      service:
+        name: gpu-webhook
+        namespace: gpu-webhook
+        path: /validate
+        port: 443
+---
+# MutatingWebhookConfiguration — injects GPU toleration + cost annotation
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: gpu-toleration-injector
+  annotations:
+    cert-manager.io/inject-ca-from: gpu-webhook/gpu-webhook-cert
+webhooks:
+  - name: mutate.gpu.cost-attribution.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system", "gpu-operator", "monitoring", "keda", "gpu-webhook"]
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+    clientConfig:
+      service:
+        name: gpu-webhook
+        namespace: gpu-webhook
+        path: /mutate
+        port: 443

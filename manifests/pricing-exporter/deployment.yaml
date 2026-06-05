@@ -40,7 +40,7 @@ spec:
             - name: AWS_REGION
               value: "us-east-1"
             - name: INSTANCE_TYPES
-              value: "g6e.2xlarge,g5.xlarge,p5.48xlarge"
+              value: "p4d.24xlarge,g6e.2xlarge,g5.xlarge,p5.48xlarge"
             - name: REFRESH_INTERVAL_HOURS
               value: "6"
           volumeMounts:
@@ -106,13 +106,15 @@ data:
     )
 
     # Instance configs: gpus_per_instance determines per-GPU price
+    # For MIG: set gpus to total_slices (e.g., 8 GPUs × 2 slices = 16)
+    # so per-slice price = instance_price / 16
     GPU_CONFIGS = {
         "g6e.2xlarge":  {"gpus": 1, "gpu_model": "L40S"},
         "g6e.12xlarge": {"gpus": 4, "gpu_model": "L40S"},
         "g5.xlarge":    {"gpus": 1, "gpu_model": "A10G"},
         "g5.12xlarge":  {"gpus": 4, "gpu_model": "A10G"},
         "p5.48xlarge":  {"gpus": 8, "gpu_model": "H100"},
-        "p4d.24xlarge": {"gpus": 8, "gpu_model": "A100"},
+        "p4d.24xlarge": {"gpus": 16, "gpu_model": "A100-MIG-3g.40gb"},
     }
 
     REGION_TO_LOCATION = {

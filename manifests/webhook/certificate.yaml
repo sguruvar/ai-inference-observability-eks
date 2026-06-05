@@ -1,0 +1,28 @@
+# cert-manager Certificate — generates TLS cert for the webhook server
+# The API server requires HTTPS for webhooks. cert-manager handles:
+# 1. Generates a CA + server cert
+# 2. Stores in Secret "gpu-webhook-tls" (mounted by the webhook pod)
+# 3. Injects the CA bundle into the WebhookConfiguration (via annotation)
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: gpu-webhook-selfsigned
+  namespace: gpu-webhook
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gpu-webhook-cert
+  namespace: gpu-webhook
+spec:
+  secretName: gpu-webhook-tls
+  dnsNames:
+    - gpu-webhook.gpu-webhook.svc
+    - gpu-webhook.gpu-webhook.svc.cluster.local
+  issuerRef:
+    name: gpu-webhook-selfsigned
+    kind: Issuer
+  duration: 8760h
+  renewBefore: 720h

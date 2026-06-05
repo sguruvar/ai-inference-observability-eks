@@ -3,3 +3,5 @@
 /tmp/
 *.tfstate*
 .terraform/
+*.pyc
+__pycache__/

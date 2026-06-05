@@ -86,6 +86,12 @@ EOF
 
 eksctl create cluster -f /tmp/eksctl-cluster.yaml
 
+# Managed nodegroups need VPC CNI + kube-proxy (Auto Mode handles these for its own nodes but not managed NGs)
+echo "  Installing VPC CNI + kube-proxy addons for managed nodegroup..."
+aws eks create-addon --cluster-name "$CLUSTER_NAME" --addon-name vpc-cni --region "$AWS_REGION" 2>/dev/null || true
+aws eks create-addon --cluster-name "$CLUSTER_NAME" --addon-name kube-proxy --region "$AWS_REGION" 2>/dev/null || true
+aws eks wait addon-active --cluster-name "$CLUSTER_NAME" --addon-name vpc-cni --region "$AWS_REGION" 2>/dev/null || true
+
 echo "  Adding GPU managed node group (p4d.24xlarge)..."
 cat <<EOF > /tmp/eksctl-gpu-ng.yaml
 apiVersion: eksctl.io/v1alpha5
@@ -98,13 +104,12 @@ metadata:
 managedNodeGroups:
   - name: gpu-mig
     instanceType: p4d.24xlarge
-    availabilityZones: ["${AWS_REGION}b", "${AWS_REGION}c", "${AWS_REGION}d"]
     desiredCapacity: 1
     minSize: 0
     maxSize: 2
     labels:
       workload: gpu
-      nvidia.com/mig.config: all-3g.40gb
+      nvidia.com/mig.config: all-3g.20gb
     taints:
       - key: nvidia.com/gpu
         value: "true"
@@ -152,14 +157,14 @@ helm upgrade --install gpu-operator nvidia/gpu-operator \
   --set toolkit.enabled=true \
   --set devicePlugin.enabled=true \
   --set dcgmExporter.enabled=true \
-  --set-string dcgmExporter.env[0].name=DCGM_EXPORTER_KUBERNETES \
-  --set-string dcgmExporter.env[0].value="true" \
+  --set-string 'dcgmExporter.env[0].name=DCGM_EXPORTER_KUBERNETES' \
+  --set-string 'dcgmExporter.env[0].value=true' \
   --set dcgmExporter.serviceMonitor.enabled=true \
   --set dcgmExporter.serviceMonitor.honorLabels=true \
   --set dcgmExporter.serviceMonitor.additionalLabels.release=prometheus \
   --set migManager.enabled=true \
-  --set-string migManager.env[0].name=WITH_REBOOT \
-  --set-string migManager.env[0].value="true" \
+  --set-string 'migManager.env[0].name=WITH_REBOOT' \
+  --set-string 'migManager.env[0].value=true' \
   --set mig.strategy=mixed \
   --set nodeStatusExporter.enabled=true \
   --set node-feature-discovery.enabled=true \

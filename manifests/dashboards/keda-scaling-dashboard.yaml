@@ -88,8 +88,8 @@ data:
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "targets": [
             {
-              "expr": "sum(kube_node_status_capacity{resource=~\"nvidia.com.*gpu.*\"})",
-              "legendFormat": "total GPUs"
+              "expr": "sum(kube_node_status_capacity{resource=~\"nvidia_com.*\",resource!=\"nvidia_com_gpu\"}) OR sum(kube_node_status_capacity{resource=\"nvidia_com_gpu\"})",
+              "legendFormat": "total GPU/MIG slices"
             }
           ],
           "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}}
@@ -101,7 +101,7 @@ data:
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "targets": [
             {
-              "expr": "kube_node_status_allocatable{resource=~\"nvidia.com.*\",resource!=\"\"}",
+              "expr": "kube_node_status_allocatable{resource=~\"nvidia_com.*\"}",
               "format": "table",
               "instant": true,
               "legendFormat": "{{node}} — {{resource}}"

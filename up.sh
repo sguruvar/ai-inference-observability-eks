@@ -123,7 +123,6 @@ managedNodeGroups:
     maxSize: 2
     labels:
       workload: gpu
-      nvidia.com/mig.config: all-3g.20gb
     taints:
       - key: nvidia.com/gpu
         value: "true"
@@ -209,6 +208,28 @@ helm upgrade --install gpu-operator nvidia/gpu-operator \
   --wait --timeout=600s
 
 echo ""
+echo "  Waiting for GPU node to be Ready before triggering MIG..."
+for i in $(seq 1 60); do
+  GPU_NODE=$(kubectl get nodes -l workload=gpu --no-headers 2>/dev/null | grep " Ready " | awk '{print $1}')
+  if [ -n "$GPU_NODE" ]; then
+    echo "  GPU node ready: $GPU_NODE"
+    break
+  fi
+  [ "$((i % 10))" -eq 0 ] && echo "  Waiting for GPU node... (attempt $i/60)"
+  sleep 10
+done
+
+# Increase ASG health check grace period BEFORE triggering MIG reboot
+echo "  Setting ASG health check grace period to 900s (survive MIG reboot)..."
+ASG_NAME=$(aws autoscaling describe-auto-scaling-groups --region "$AWS_REGION" \
+  --query "AutoScalingGroups[?contains(AutoScalingGroupName,'gpu-mig')].AutoScalingGroupName" --output text 2>/dev/null)
+[ -n "$ASG_NAME" ] && aws autoscaling update-auto-scaling-group \
+  --auto-scaling-group-name "$ASG_NAME" --health-check-grace-period 900 --region "$AWS_REGION" 2>/dev/null
+
+# NOW apply MIG label — this triggers the MIG Manager to configure GPUs
+echo "  Applying MIG label (triggers GPU reconfig + reboot)..."
+kubectl label nodes -l workload=gpu nvidia.com/mig.config=all-3g.20gb --overwrite 2>/dev/null
+
 echo "  Waiting for MIG configuration on GPU node..."
 echo "  (MIG Manager reads nvidia.com/mig.config label → configures GPUs → node reboots)"
 for i in $(seq 1 90); do

@@ -99,11 +99,13 @@ EOF
 
 eksctl create cluster -f /tmp/eksctl-cluster.yaml
 
-# Managed nodegroups need VPC CNI + kube-proxy (Auto Mode handles these for its own nodes but not managed NGs)
-echo "  Installing VPC CNI + kube-proxy addons for managed nodegroup..."
+# Managed nodegroups need VPC CNI + kube-proxy + CoreDNS (Auto Mode handles these internally for its own nodes)
+echo "  Installing VPC CNI + kube-proxy + CoreDNS addons for managed nodegroup..."
 aws eks create-addon --cluster-name "$CLUSTER_NAME" --addon-name vpc-cni --region "$AWS_REGION" 2>/dev/null || true
 aws eks create-addon --cluster-name "$CLUSTER_NAME" --addon-name kube-proxy --region "$AWS_REGION" 2>/dev/null || true
+aws eks create-addon --cluster-name "$CLUSTER_NAME" --addon-name coredns --region "$AWS_REGION" 2>/dev/null || true
 aws eks wait addon-active --cluster-name "$CLUSTER_NAME" --addon-name vpc-cni --region "$AWS_REGION" 2>/dev/null || true
+aws eks wait addon-active --cluster-name "$CLUSTER_NAME" --addon-name coredns --region "$AWS_REGION" 2>/dev/null || true
 
 echo "  Adding GPU managed node group (p4d.24xlarge)..."
 cat <<EOF > /tmp/eksctl-gpu-ng.yaml

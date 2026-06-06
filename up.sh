@@ -402,6 +402,10 @@ sed "s|ROLE_ARN_PLACEHOLDER|$ROLE_ARN|g" "$SCRIPT_DIR/manifests/pricing-exporter
 kubectl apply -f "$SCRIPT_DIR/manifests/pricing-exporter/service.yaml"
 kubectl apply -f "$SCRIPT_DIR/manifests/pricing-exporter/servicemonitor.yaml"
 
+# Pod Identity needs a pod restart to inject credentials
+sleep 5
+kubectl rollout restart deployment/gpu-pricing-exporter -n monitoring 2>/dev/null || true
+
 echo ""
 # ─── Step 5: KEDA ─────────────────────────────────────────────────────────────
 echo "=== [5/9] Installing KEDA (~1 min) ==="

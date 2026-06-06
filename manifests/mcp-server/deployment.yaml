@@ -69,15 +69,13 @@ spec:
             limits:
               memory: 256Mi
           livenessProbe:
-            httpGet:
-              path: /mcp
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 10
+          readinessProbe:
+            tcpSocket:
               port: 8080
             initialDelaySeconds: 5
-          readinessProbe:
-            httpGet:
-              path: /mcp
-              port: 8080
-            initialDelaySeconds: 3
 ---
 apiVersion: v1
 kind: Service

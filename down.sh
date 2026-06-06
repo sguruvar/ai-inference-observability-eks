@@ -4,7 +4,7 @@ set -euo pipefail
 # ONE COMMAND: destroys everything. No orphaned AWS resources.
 # Usage: ./down.sh
 
-export AWS_REGION="${AWS_REGION:-us-west-2}"
+export AWS_REGION="${AWS_REGION:-us-east-2}"
 export CLUSTER_NAME="${CLUSTER_NAME:-gpu-mig-demo}"
 export DYNAMO_NS="${DYNAMO_NS:-dynamo-system}"
 
@@ -69,8 +69,10 @@ ASSOC_ID=$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME"
 aws iam delete-role-policy --role-name "$ROLE_NAME" --policy-name "pricing-get-products" 2>/dev/null || true
 aws iam delete-role --role-name "$ROLE_NAME" 2>/dev/null || true
 
-# Delete ECR repo for webhook
+# Delete ECR repos
 aws ecr delete-repository --repository-name "${CLUSTER_NAME}-webhook" \
+  --region "$AWS_REGION" --force 2>/dev/null || true
+aws ecr delete-repository --repository-name "${CLUSTER_NAME}-mcp-server" \
   --region "$AWS_REGION" --force 2>/dev/null || true
 
 echo "--- [8/8] Deleting EKS cluster (~5 min) ---"

@@ -19,7 +19,7 @@ set -euo pipefail
 # Time: ~20 min to fully operational
 # Destroy: ./down.sh
 
-export AWS_REGION="${AWS_REGION:-us-west-2}"
+export AWS_REGION="${AWS_REGION:-us-east-2}"
 export CLUSTER_NAME="${CLUSTER_NAME:-gpu-mig-demo}"
 export DYNAMO_NS="${DYNAMO_NS:-dynamo-system}"
 HF_TOKEN="${HF_TOKEN:?ERROR: Set HF_TOKEN (https://huggingface.co/settings/tokens)}"
@@ -36,7 +36,7 @@ echo "============================================"
 echo ""
 
 # ─── Step 1: EKS Cluster with Managed GPU Node Group ──────────────────────────
-echo "=== [1/8] Creating EKS cluster + p4d GPU node group (~15 min) ==="
+echo "=== [1/9] Creating EKS cluster + p4d GPU node group (~15 min) ==="
 
 # Clean up any leftover CF stacks from failed previous runs
 EXISTING_STACK=$(aws cloudformation describe-stacks --stack-name "eksctl-${CLUSTER_NAME}-cluster" \
@@ -180,7 +180,7 @@ EOF
 
 echo ""
 # ─── Step 2: GPU Operator + MIG ───────────────────────────────────────────────
-echo "=== [2/8] Installing GPU Operator + MIG Manager (~5 min) ==="
+echo "=== [2/9] Installing GPU Operator + MIG Manager (~5 min) ==="
 
 helm repo add nvidia https://helm.ngc.nvidia.com/nvidia 2>/dev/null || true
 helm repo update nvidia
@@ -267,7 +267,7 @@ done
 
 echo ""
 # ─── Step 3: Dynamo Platform ──────────────────────────────────────────────────
-echo "=== [3/8] Installing Dynamo Platform (~3 min) ==="
+echo "=== [3/9] Installing Dynamo Platform (~3 min) ==="
 
 helm repo add nvidia-dynamo https://helm.ngc.nvidia.com/nvidia/ai-dynamo 2>/dev/null || true
 helm repo update nvidia-dynamo
@@ -351,7 +351,7 @@ helm upgrade --install dynamo-platform nvidia-dynamo/dynamo-platform \
 
 echo ""
 # ─── Step 4: Monitoring (Prometheus + Grafana via LoadBalancer) ────────────────
-echo "=== [4/8] Installing Monitoring (Grafana exposed via LoadBalancer) (~3 min) ==="
+echo "=== [4/9] Installing Monitoring (Grafana exposed via LoadBalancer) (~3 min) ==="
 
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
 helm repo update prometheus-community
@@ -402,7 +402,7 @@ kubectl apply -f "$SCRIPT_DIR/manifests/pricing-exporter/servicemonitor.yaml"
 
 echo ""
 # ─── Step 5: KEDA ─────────────────────────────────────────────────────────────
-echo "=== [5/8] Installing KEDA (~1 min) ==="
+echo "=== [5/9] Installing KEDA (~1 min) ==="
 
 helm repo add kedacore https://kedacore.github.io/charts 2>/dev/null || true
 helm repo update kedacore
@@ -413,7 +413,7 @@ helm upgrade --install keda kedacore/keda \
 
 echo ""
 # ─── Step 6: Admission Webhooks ───────────────────────────────────────────────
-echo "=== [6/8] Deploying Admission Webhooks (~2 min) ==="
+echo "=== [6/9] Deploying Admission Webhooks (~2 min) ==="
 
 # Install cert-manager (needed for webhook TLS)
 helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
@@ -467,7 +467,7 @@ echo "    - MutatingWebhook: injects GPU toleration + cost annotation"
 
 echo ""
 # ─── Step 7: Deploy Inference (DGDs) ──────────────────────────────────────────
-echo "=== [7/8] Deploying Inference (DGDs on MIG slices) ==="
+echo "=== [7/9] Deploying Inference (DGDs on MIG slices) ==="
 
 kubectl apply -f "$SCRIPT_DIR/manifests/inference/team-alpha-disagg.yaml"
 kubectl apply -f "$SCRIPT_DIR/manifests/inference/team-beta-agg.yaml"
@@ -488,14 +488,32 @@ done
 
 echo ""
 # ─── Step 8: KEDA ScaledObjects + Load Generators ─────────────────────────────
-echo "=== [8/8] Deploying KEDA ScaledObjects + Load Generators ==="
+echo "=== [8/9] Deploying KEDA ScaledObjects + Load Generators ==="
 
 kubectl apply -f "$SCRIPT_DIR/manifests/keda/"
 kubectl apply -f "$SCRIPT_DIR/manifests/loadgen/"
 
 echo ""
+# ─── Step 9: MCP Server ──────────────────────────────────────────────────────
+echo "=== [9/9] Deploying GPU Platform MCP Server ==="
+
+MCP_ECR_REPO="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${CLUSTER_NAME}-mcp-server"
+aws ecr create-repository --repository-name "${CLUSTER_NAME}-mcp-server" \
+  --region "$AWS_REGION" 2>/dev/null || true
+
+docker build --platform linux/amd64 -t "$MCP_ECR_REPO:latest" "$SCRIPT_DIR/mcp-server/" 2>&1 | tail -3
+docker push "$MCP_ECR_REPO:latest" 2>&1 | tail -3
+
+sed "s|MCP_SERVER_IMAGE_PLACEHOLDER|$MCP_ECR_REPO:latest|g" \
+  "$SCRIPT_DIR/manifests/mcp-server/deployment.yaml" | kubectl apply -f -
+
+kubectl rollout status deployment/gpu-mcp-server -n monitoring --timeout=60s 2>/dev/null || true
+
+echo ""
 # ─── Done ─────────────────────────────────────────────────────────────────────
 GRAFANA_URL=$(kubectl get svc prometheus-grafana -n monitoring \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+MCP_URL=$(kubectl get svc gpu-mcp-server -n monitoring \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
 
 echo "============================================"
@@ -504,7 +522,9 @@ echo "============================================"
 echo ""
 echo " Grafana:    http://${GRAFANA_URL}"
 echo "             Login: admin / prom-operator"
-echo "             (LoadBalancer may take 2 min to provision)"
+echo ""
+echo " MCP Server: http://${MCP_URL}:8080/mcp"
+echo "             (Connect with any MCP client)"
 echo ""
 echo " Dashboards:"
 echo "   - GPU Cost Attribution: /d/gpu-cost-attribution"

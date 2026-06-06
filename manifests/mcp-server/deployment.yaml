@@ -1,0 +1,98 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-mcp-server
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gpu-mcp-server
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["get", "list", "patch", "update"]
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects"]
+    verbs: ["get", "list"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpu-mcp-server
+subjects:
+  - kind: ServiceAccount
+    name: gpu-mcp-server
+    namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: gpu-mcp-server
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-mcp-server
+  namespace: monitoring
+  labels:
+    app: gpu-mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gpu-mcp-server
+  template:
+    metadata:
+      labels:
+        app: gpu-mcp-server
+    spec:
+      serviceAccountName: gpu-mcp-server
+      containers:
+        - name: mcp-server
+          image: MCP_SERVER_IMAGE_PLACEHOLDER
+          ports:
+            - containerPort: 8080
+              name: mcp
+          env:
+            - name: PROMETHEUS_URL
+              value: "http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /mcp
+              port: 8080
+            initialDelaySeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /mcp
+              port: 8080
+            initialDelaySeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpu-mcp-server
+  namespace: monitoring
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+spec:
+  type: LoadBalancer
+  selector:
+    app: gpu-mcp-server
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: mcp

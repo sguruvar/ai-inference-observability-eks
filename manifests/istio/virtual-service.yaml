@@ -1,0 +1,88 @@
+# Traffic management for inference frontends
+# Enables canary deployments: route % of traffic to new model version
+# Also enforces per-team rate limiting via EnvoyFilter
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: inference-routing
+  namespace: dynamo-system
+spec:
+  hosts:
+    - vllm-disagg-frontend
+    - vllm-agg-frontend
+  http:
+    # Canary: route 90% to stable, 10% to canary (when canary subset exists)
+    - match:
+        - headers:
+            x-model-version:
+              exact: "canary"
+      route:
+        - destination:
+            host: vllm-disagg-frontend
+            subset: canary
+          weight: 100
+    # Default: all traffic to stable
+    - route:
+        - destination:
+            host: vllm-disagg-frontend
+            subset: stable
+          weight: 100
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: vllm-disagg-frontend
+  namespace: dynamo-system
+spec:
+  host: vllm-disagg-frontend
+  trafficPolicy:
+    connectionPool:
+      http:
+        h2UpgradePolicy: DO_NOT_UPGRADE
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+    - name: canary
+      labels:
+        version: canary
+---
+# Rate limiting per team using request headers
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: team-rate-limit
+  namespace: dynamo-system
+spec:
+  workloadSelector:
+    labels:
+      nvidia.com/dynamo-component: frontend
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: SIDECAR_INBOUND
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.local_ratelimit
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+            stat_prefix: http_local_rate_limiter
+            token_bucket:
+              max_tokens: 100
+              tokens_per_fill: 50
+              fill_interval: 60s
+            filter_enabled:
+              runtime_key: local_rate_limit_enabled
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+            filter_enforced:
+              runtime_key: local_rate_limit_enforced
+              default_value:
+                numerator: 100
+                denominator: HUNDRED

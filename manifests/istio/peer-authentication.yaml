@@ -1,0 +1,10 @@
+# Enforce mTLS for all services in dynamo-system
+# This secures the KV cache transfer between prefill and decode workers
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: dynamo-system
+spec:
+  mtls:
+    mode: STRICT

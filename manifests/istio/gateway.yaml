@@ -1,0 +1,33 @@
+# Istio Gateway — external entry point for inference traffic
+# Teams access inference through this gateway, not direct service URLs
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: inference-gateway
+  namespace: dynamo-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "inference.gpu-platform.internal"
+---
+# Authorization policy: only allow requests with valid team header
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: require-team-header
+  namespace: dynamo-system
+spec:
+  action: DENY
+  rules:
+    - from:
+        - source:
+            notNamespaces: ["dynamo-system", "monitoring", "keda"]
+      when:
+        - key: request.headers[x-team]
+          notValues: ["alpha", "beta", "gamma", "platform"]

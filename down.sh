@@ -29,7 +29,14 @@ helm uninstall cert-manager -n cert-manager 2>/dev/null || true
 kubectl delete namespace gpu-webhook --wait=false 2>/dev/null || true
 kubectl delete namespace cert-manager --wait=false 2>/dev/null || true
 
-echo "--- [3/8] Deleting DynamoGraphDeployments ---"
+echo "--- [3/10] Uninstalling ArgoCD + Istio ---"
+helm uninstall argocd -n argocd 2>/dev/null || true
+kubectl delete namespace argocd --wait=false 2>/dev/null || true
+helm uninstall istiod -n istio-system 2>/dev/null || true
+helm uninstall istio-base -n istio-system 2>/dev/null || true
+kubectl delete namespace istio-system --wait=false 2>/dev/null || true
+
+echo "--- [4/10] Deleting DynamoGraphDeployments ---"
 kubectl delete dgd --all -n "$DYNAMO_NS" 2>/dev/null || true
 echo "  Waiting for GPU pods to terminate..."
 sleep 15

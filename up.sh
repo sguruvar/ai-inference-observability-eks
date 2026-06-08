@@ -36,7 +36,7 @@ echo "============================================"
 echo ""
 
 # ─── Step 1: EKS Cluster with Managed GPU Node Group ──────────────────────────
-echo "=== [1/9] Creating EKS cluster + p4d GPU node group (~15 min) ==="
+echo "=== [1/11] Creating EKS cluster + p4d GPU node group (~15 min) ==="
 
 # Clean up any leftover CF stacks from failed previous runs
 EXISTING_STACK=$(aws cloudformation describe-stacks --stack-name "eksctl-${CLUSTER_NAME}-cluster" \
@@ -182,7 +182,7 @@ EOF
 
 echo ""
 # ─── Step 2: GPU Operator + MIG ───────────────────────────────────────────────
-echo "=== [2/9] Installing GPU Operator + MIG Manager (~5 min) ==="
+echo "=== [2/11] Installing GPU Operator + MIG Manager (~5 min) ==="
 
 helm repo add nvidia https://helm.ngc.nvidia.com/nvidia 2>/dev/null || true
 helm repo update nvidia
@@ -269,7 +269,7 @@ done
 
 echo ""
 # ─── Step 3: Dynamo Platform ──────────────────────────────────────────────────
-echo "=== [3/9] Installing Dynamo Platform (~3 min) ==="
+echo "=== [3/11] Installing Dynamo Platform (~3 min) ==="
 
 helm repo add nvidia-dynamo https://helm.ngc.nvidia.com/nvidia/ai-dynamo 2>/dev/null || true
 helm repo update nvidia-dynamo
@@ -353,7 +353,7 @@ helm upgrade --install dynamo-platform nvidia-dynamo/dynamo-platform \
 
 echo ""
 # ─── Step 4: Monitoring (Prometheus + Grafana via LoadBalancer) ────────────────
-echo "=== [4/9] Installing Monitoring (Grafana exposed via LoadBalancer) (~3 min) ==="
+echo "=== [4/11] Installing Monitoring (Grafana exposed via LoadBalancer) (~3 min) ==="
 
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
 helm repo update prometheus-community
@@ -407,8 +407,24 @@ sleep 5
 kubectl rollout restart deployment/gpu-pricing-exporter -n monitoring 2>/dev/null || true
 
 echo ""
-# ─── Step 5: KEDA ─────────────────────────────────────────────────────────────
-echo "=== [5/9] Installing KEDA (~1 min) ==="
+# ─── Step 5: Istio Service Mesh ───────────────────────────────────────────────
+echo "=== [5/11] Installing Istio Service Mesh (~2 min) ==="
+
+helm repo add istio https://istio-release.storage.googleapis.com/charts 2>/dev/null || true
+helm repo update istio
+
+helm upgrade --install istio-base istio/base -n istio-system --create-namespace --wait --timeout=120s
+helm upgrade --install istiod istio/istiod -n istio-system --wait --timeout=120s
+
+# Enable sidecar injection for inference namespace
+kubectl label namespace "$DYNAMO_NS" istio-injection=enabled --overwrite 2>/dev/null || true
+
+# Apply Istio configs (mTLS, traffic routing, rate limiting)
+kubectl apply -f "$SCRIPT_DIR/manifests/istio/"
+
+echo ""
+# ─── Step 6: KEDA ─────────────────────────────────────────────────────────────
+echo "=== [6/11] Installing KEDA (~1 min) ==="
 
 helm repo add kedacore https://kedacore.github.io/charts 2>/dev/null || true
 helm repo update kedacore
@@ -418,8 +434,8 @@ helm upgrade --install keda kedacore/keda \
   --wait --timeout=120s
 
 echo ""
-# ─── Step 6: Admission Webhooks ───────────────────────────────────────────────
-echo "=== [6/9] Deploying Admission Webhooks (~2 min) ==="
+# ─── Step 7: Admission Webhooks ───────────────────────────────────────────────
+echo "=== [7/11] Deploying Admission Webhooks (~2 min) ==="
 
 # Install cert-manager (needed for webhook TLS)
 helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
@@ -472,8 +488,29 @@ echo "    - ValidatingWebhook: rejects GPU pods without 'team' label"
 echo "    - MutatingWebhook: injects GPU toleration + cost annotation"
 
 echo ""
-# ─── Step 7: Deploy Inference (DGDs) ──────────────────────────────────────────
-echo "=== [7/9] Deploying Inference (DGDs on MIG slices) ==="
+# ─── Step 8: ArgoCD (GitOps) ─────────────────────────────────────────────────
+echo "=== [8/11] Installing ArgoCD (~2 min) ==="
+
+helm repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || true
+helm repo update argo
+
+helm upgrade --install argocd argo/argo-cd \
+  -n argocd --create-namespace \
+  --set server.service.type=LoadBalancer \
+  --set-string server.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-scheme"=internet-facing \
+  --set-string server.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"=external \
+  --set-string server.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-nlb-target-type"=ip \
+  --set configs.params."server\.insecure"=true \
+  --wait --timeout=180s
+
+# Apply ArgoCD project + applications (auto-sync from this repo)
+kubectl apply -f "$SCRIPT_DIR/manifests/argocd/"
+
+echo "  ArgoCD installed. Applications will sync from Git."
+
+echo ""
+# ─── Step 9: Deploy Inference (DGDs) ──────────────────────────────────────────
+echo "=== [9/11] Deploying Inference (DGDs on MIG slices) ==="
 
 kubectl apply -f "$SCRIPT_DIR/manifests/inference/team-alpha-disagg.yaml"
 kubectl apply -f "$SCRIPT_DIR/manifests/inference/team-beta-agg.yaml"
@@ -494,14 +531,14 @@ done
 
 echo ""
 # ─── Step 8: KEDA ScaledObjects + Load Generators ─────────────────────────────
-echo "=== [8/9] Deploying KEDA ScaledObjects + Load Generators ==="
+echo "=== [10/11] Deploying KEDA ScaledObjects + Load Generators ==="
 
 kubectl apply -f "$SCRIPT_DIR/manifests/keda/"
 kubectl apply -f "$SCRIPT_DIR/manifests/loadgen/"
 
 echo ""
 # ─── Step 9: MCP Server ──────────────────────────────────────────────────────
-echo "=== [9/9] Deploying GPU Platform MCP Server ==="
+echo "=== [11/11] Deploying GPU Platform MCP Server ==="
 
 MCP_ECR_REPO="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${CLUSTER_NAME}-mcp-server"
 aws ecr create-repository --repository-name "${CLUSTER_NAME}-mcp-server" \
@@ -521,6 +558,10 @@ GRAFANA_URL=$(kubectl get svc prometheus-grafana -n monitoring \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
 MCP_URL=$(kubectl get svc gpu-mcp-server -n monitoring \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+ARGOCD_URL=$(kubectl get svc argocd-server -n argocd \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+ARGOCD_PASS=$(kubectl get secret argocd-initial-admin-secret -n argocd \
+  -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null || echo "unknown")
 
 echo "============================================"
 echo " CLUSTER READY"
@@ -528,6 +569,9 @@ echo "============================================"
 echo ""
 echo " Grafana:    http://${GRAFANA_URL}"
 echo "             Login: admin / prom-operator"
+echo ""
+echo " ArgoCD:     http://${ARGOCD_URL}"
+echo "             Login: admin / ${ARGOCD_PASS}"
 echo ""
 echo " MCP Server: http://${MCP_URL}:8080/mcp"
 echo "             (Connect with any MCP client)"
@@ -542,6 +586,8 @@ echo ""
 echo " Test webhook:"
 echo "   kubectl run bad-pod -n dynamo-system --image=nginx --overrides='{\"spec\":{\"containers\":[{\"name\":\"c\",\"image\":\"nginx\",\"resources\":{\"limits\":{\"nvidia.com/gpu\":\"1\"}}}]}}'"
 echo "   → should be REJECTED (missing team label)"
+echo ""
+echo " Test GitOps: git push a change to manifests/inference/ → ArgoCD auto-syncs"
 echo ""
 echo " Destroy: ./down.sh"
 echo " Cost: ~\$35/hr — DESTROY WHEN DONE"

@@ -1,0 +1,28 @@
+# ArgoCD AppProject — restricts what teams can deploy and where
+# Teams can only deploy to their own namespace with specific resource types
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: gpu-platform
+  namespace: argocd
+spec:
+  description: GPU inference platform — managed workloads
+  sourceRepos:
+    - "https://github.com/YOUR_USERNAME/eks-gpu-cost-attribution-vllm.git"
+  destinations:
+    - namespace: dynamo-system
+      server: https://kubernetes.default.svc
+    - namespace: monitoring
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: nvidia.com
+      kind: DynamoGraphDeployment
+    - group: keda.sh
+      kind: ScaledObject
+    - group: monitoring.coreos.com
+      kind: PrometheusRule
+    - group: ""
+      kind: ConfigMap

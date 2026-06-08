@@ -1,0 +1,77 @@
+# ArgoCD Application — watches the manifests/inference directory in this repo
+# When a team PRs a change to their DGD manifest, ArgoCD auto-syncs to cluster
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gpu-inference-workloads
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # Point to YOUR repo — change this URL
+    repoURL: https://github.com/YOUR_USERNAME/eks-gpu-cost-attribution-vllm.git
+    targetRevision: main
+    path: manifests/inference
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dynamo-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+---
+# Separate Application for monitoring configs (recording rules, dashboards)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gpu-monitoring
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_USERNAME/eks-gpu-cost-attribution-vllm.git
+    targetRevision: main
+    path: manifests/monitoring
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+# Application for KEDA ScaledObjects
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gpu-autoscaling
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_USERNAME/eks-gpu-cost-attribution-vllm.git
+    targetRevision: main
+    path: manifests/keda
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dynamo-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

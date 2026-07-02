@@ -160,10 +160,23 @@ checks.append((
     all_ai_infra and len(tier2_keys) > 0,
 ))
 
-# Check 4: No raw_args or raw_result in evidence packet
+# Check 4: No raw_args or raw_result in evidence packet (null check)
 checks.append((
     "No raw_args or raw_result in evidence packet (null check)",
     evidence_packet["raw_args"] is None and evidence_packet["raw_result"] is None,
+))
+
+# Check 4b: Raw payload values absent from evidence packet and span attributes
+# Turns privacy boundary into an executable regression
+RAW_PAYLOAD_SENTINELS = ["ACCT-9182", "14209.55", "USD", "2026-06-30T00:00:00Z"]
+evidence_str = json.dumps(evidence_packet)
+tool_attrs_str = json.dumps(dict(collected_spans["tool"].attributes))
+llm_attrs_str = json.dumps(dict(collected_spans["llm"].attributes))
+combined_output = evidence_str + tool_attrs_str + llm_attrs_str
+no_leakage = not any(s in combined_output for s in RAW_PAYLOAD_SENTINELS)
+checks.append((
+    "Raw payload values absent from spans and evidence packet (leakage check)",
+    no_leakage,
 ))
 
 # Check 5: Evidence packet links to trace/span IDs with hashes present
@@ -197,9 +210,9 @@ for desc, result in checks:
     print(f"  [{status}] {desc}")
 
 print("-" * 60)
-print(f"Challenge 2 reference test: {passed}/6 checks passed")
+print(f"Challenge 2 reference test: {passed}/{len(checks)} checks passed")
 
-causal = "VERIFIED" if passed == 6 else "NOT VERIFIED"
+causal = "VERIFIED" if passed == len(checks) else "NOT VERIFIED"
 print(f"Causal path reconstruction: {causal}")
 
 provider.shutdown()

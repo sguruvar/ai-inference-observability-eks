@@ -20,14 +20,7 @@ import os
 
 os.environ.setdefault("PROMETHEUS_URL", "http://localhost:9090")
 
-from server import server
+from server import mcp
 
 if __name__ == "__main__":
-    from mcp.server.stdio import stdio_server
-    import asyncio
-
-    async def main():
-        async with stdio_server() as (read, write):
-            await server.run(read, write, server.create_initialization_options())
-
-    asyncio.run(main())
+    mcp.run(transport="stdio")

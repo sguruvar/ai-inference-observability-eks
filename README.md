@@ -1,3 +1,11 @@
+## Why This Exists
+
+Disaggregated LLM inference splits prefill and decode into separate workers — each with different GPU memory and compute profiles. Standard monitoring treats the whole inference request as a black box, making it impossible to answer: which team is consuming what GPU capacity, and at what cost?
+
+This repo proves the full attribution chain: Dynamo disaggregates the workload → DCGM measures per-pod GPU utilization → Prometheus recording rules compute dollar cost per namespace → Grafana surfaces it as a dashboard any platform team can act on.
+
+Built as a reference implementation for the [OpenTelemetry AI Inference blueprint](https://github.com/open-telemetry/opentelemetry.io/pull/10310) and the [NVIDIA DCGM Exporter dashboards](https://github.com/NVIDIA/dcgm-exporter/pull/674).
+
 # GPU Cost Attribution with NVIDIA Dynamo + vLLM on EKS
 
 Disaggregated LLM inference (prefill/decode split) with per-namespace GPU cost attribution.
@@ -43,6 +51,18 @@ Proves: Dynamo orchestrates vLLM workers → DCGM measures GPU utilization per p
 Both modes prove the same point: Dynamo disaggregated serving → DCGM metrics → cost attribution.
 MIG mode additionally proves multi-tenant GPU slicing.
 
+## What's Included
+
+| Artifact | Location | Description |
+|---|---|---|
+| Kubernetes manifests | `manifests/` | Dynamo, vLLM workers, DCGM exporter, Prometheus stack |
+| Cluster scripts | `scripts/` | End-to-end deploy and teardown — each step is copy-paste |
+| Prometheus recording rules | `manifests/recording-rules.yaml` | Cost math: GPU util × $/GPU/hr → $/namespace |
+| Grafana dashboards | `manifests/dashboards/` | Cost attribution, KEDA autoscaling, disaggregated inference |
+| MCP server | `mcp-server/` | Query Prometheus metrics via natural language |
+| Runbooks | `runbooks/` | GPU saturation, KV cache eviction, KEDA scaling lag |
+| Blog walkthrough | `BLOG.md` | Step-by-step narrative with expected outputs at each stage |
+
 ## Prerequisites
 
 - AWS CLI configured (`aws sts get-caller-identity` works)
@@ -81,3 +101,24 @@ kubectl port-forward svc/prometheus-grafana 3000:80 -n monitoring
 
 Quick demo mode: ~$4/hr (g6e.2xlarge × 3 GPU nodes + system nodes via Auto Mode)
 Run for 1-2 hours, then destroy. Total cost: $5-8.
+
+## Related Work
+
+- [NVIDIA DCGM Exporter PR #674](https://github.com/NVIDIA/dcgm-exporter/pull/674) — Three Grafana dashboards (cost attribution, KEDA autoscaling, disaggregated inference) contributed upstream to NVIDIA
+- [OpenTelemetry AI Inference Blueprint PR #10310](https://github.com/open-telemetry/opentelemetry.io/pull/10310) — Architecture from this repo contributed as an OTel community blueprint
+- [GPU Cost Attribution with NVIDIA Dynamo (Medium)](https://medium.com/@sivagurunath/gpu-cost-attribution-for-disaggregated-llm-inference-with-nvidia-dynamo-34815fd55ea4) — Article walkthrough
+- [Per-Namespace GPU Cost Attribution on EKS with NVIDIA MIG (Medium)](https://medium.com/@sivagurunath/per-namespace-gpu-cost-attribution-on-eks-with-nvidia-mig-9dde0f82b6e4) — MIG mode deep dive
+
+## Citation
+
+If you use this in a talk, blog, or paper:
+
+```
+@misc{ai-inference-observability-eks,
+  author = {Siva Guruvareddiar},
+  title  = {AI Inference Observability on EKS},
+  year   = {2026},
+  url    = {https://github.com/sguruvar/ai-inference-observability-eks}
+}
+```
+

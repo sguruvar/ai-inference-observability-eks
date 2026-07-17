@@ -1,3 +1,9 @@
+
+# GPU Cost Attribution with NVIDIA Dynamo + vLLM on EKS
+
+Disaggregated LLM inference (prefill/decode split) with per-namespace GPU cost attribution.
+Proves: Dynamo orchestrates vLLM workers → DCGM measures GPU utilization per pod → Prometheus recording rules compute cost → Grafana shows who's spending what.
+
 ## Why This Exists
 
 Disaggregated LLM inference splits prefill and decode into separate workers — each with different GPU memory and compute profiles. Standard monitoring treats the whole inference request as a black box, making it impossible to answer: which team is consuming what GPU capacity, and at what cost?
@@ -5,11 +11,6 @@ Disaggregated LLM inference splits prefill and decode into separate workers — 
 This repo proves the full attribution chain: Dynamo disaggregates the workload → DCGM measures per-pod GPU utilization → Prometheus recording rules compute dollar cost per namespace → Grafana surfaces it as a dashboard any platform team can act on.
 
 Built as a reference implementation for the [OpenTelemetry AI Inference blueprint](https://github.com/open-telemetry/opentelemetry.io/pull/10310) and the [NVIDIA DCGM Exporter dashboards](https://github.com/NVIDIA/dcgm-exporter/pull/674).
-
-# GPU Cost Attribution with NVIDIA Dynamo + vLLM on EKS
-
-Disaggregated LLM inference (prefill/decode split) with per-namespace GPU cost attribution.
-Proves: Dynamo orchestrates vLLM workers → DCGM measures GPU utilization per pod → Prometheus recording rules compute cost → Grafana shows who's spending what.
 
 ## Architecture
 
